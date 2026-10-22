@@ -21,10 +21,10 @@ const messageSchema = new mongoose.Schema({
   },
 
   messageType: {
-    type: String,
-    enum: ['text', 'image', 'file'],
-    default: 'text'
-  },
+  type: String,
+  enum: ['text', 'image', 'file', 'document'],
+  default: 'text'
+},
 
   fileUrl: {
     type: String,

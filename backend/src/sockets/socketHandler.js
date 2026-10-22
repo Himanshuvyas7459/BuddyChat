@@ -129,10 +129,14 @@ const socketHandler = (io) => {
         }
       })
 
-    io.to(`conversation:${conversationId}`).emit(
-      'new-message',
-      populatedMessage
-    )
+   
+io.to([
+  `conversation:${conversationId}`,
+  ...conversation.participants.map((participantId) =>
+    participantId.toString()
+  )
+]).emit('new-message', populatedMessage)
+
 
   } catch (error) {
     console.error(

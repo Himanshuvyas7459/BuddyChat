@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSelector } from 'react-redux'
+import EmojiPicker from 'emoji-picker-react'
 import {
   MessageCircle,
   Search,
@@ -37,7 +38,10 @@ const Dashboard = () => {
   const [replyingTo, setReplyingTo] = useState(null)
   const [showCreateGroup, setShowCreateGroup] =
   useState(false)
+  const fileInputRef = useRef(null)
+const [uploadingFile, setUploadingFile] = useState(false)
 
+const [showEmojiPicker, setShowEmojiPicker] = useState(false)
 const [groupName, setGroupName] = useState('')
 const [groupUsers, setGroupUsers] = useState([])
 const [groupSearch, setGroupSearch] = useState('')
@@ -52,10 +56,46 @@ const [groupSearchUsers, setGroupSearchUsers] =
   useState(null)
 
   const [loading, setLoading] = useState(true)
+  const [unreadCounts, setUnreadCounts] = useState(() => {
+  try {
+    return JSON.parse(
+      localStorage.getItem('buddychat_unread_counts') || '{}'
+    )
+  } catch {
+    return {}
+  }
+})
   const [isTyping, setIsTyping] = useState(false)
   const [typingUser, setTypingUser] = useState('')
   const [typingTimeout, setTypingTimeout] =
     useState(null)
+
+    
+const requestNotificationPermission = async () => {
+  if (!('Notification' in window)) {
+    return false
+  }
+
+  if (Notification.permission === 'granted') {
+    return true
+  }
+
+  if (Notification.permission === 'denied') {
+    return false
+  }
+
+  const permission = await Notification.requestPermission()
+  return permission === 'granted'
+}
+
+  
+useEffect(() => {
+  localStorage.setItem(
+    'buddychat_unread_counts',
+    JSON.stringify(unreadCounts)
+  )
+}, [unreadCounts])
+
 
   // Auto scroll to latest message
   useEffect(() => {
@@ -170,13 +210,20 @@ const [groupSearchUsers, setGroupSearchUsers] =
 }
 
   const handleSelectConversation = (conversation) => {
-    setSelectedConversation(conversation)
-    setReplyingTo(null)
-    setMessageMenuId(null)
-    setEditingMessageId(null)
-    setEditingText('')
-    loadMessages(conversation._id)
-  }
+  setSelectedConversation(conversation)
+
+  setUnreadCounts((prev) => ({
+    ...prev,
+    [String(conversation._id)]: 0
+  }))
+
+  setReplyingTo(null)
+  setMessageMenuId(null)
+  setEditingMessageId(null)
+  setEditingText('')
+
+  loadMessages(conversation._id)
+}
 
   const handleSendMessage = (event) => {
     event.preventDefault()
@@ -204,6 +251,68 @@ const [groupSearchUsers, setGroupSearchUsers] =
     setMessage('')
     setReplyingTo(null)
   }
+
+  
+const handleFileUpload = async (event) => {
+  const file = event.target.files?.[0]
+
+  if (!file || !selectedConversation || !socket.connected) {
+    event.target.value = ''
+    return
+  }
+
+  const allowedTypes = [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    'application/pdf',
+    'text/plain',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ]
+
+  if (!allowedTypes.includes(file.type)) {
+    toast.error('Unsupported file type')
+    event.target.value = ''
+    return
+  }
+
+  if (file.size > 10 * 1024 * 1024) {
+    toast.error('File size must be 10 MB or less')
+    event.target.value = ''
+    return
+  }
+
+  try {
+    setUploadingFile(true)
+
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const response = await api.post('/uploads', formData)
+
+    const uploadedFile = response.data
+
+    socket.emit('send-message', {
+      conversationId: selectedConversation._id,
+      text: '',
+      messageType: uploadedFile.fileType,
+      fileUrl: uploadedFile.fileUrl,
+      replyTo: replyingTo?._id || null
+    })
+
+    setReplyingTo(null)
+    toast.success('File sent')
+  } catch (error) {
+    console.error('File upload error:', error)
+    toast.error(error.response?.data?.message || 'File upload failed')
+  } finally {
+    setUploadingFile(false)
+    event.target.value = ''
+  }
+}
+
 
   const handleDeleteMessage = async (messageId) => {
     const confirmDelete = window.confirm(
@@ -496,78 +605,129 @@ const handleRenameGroup = async () => {
   }, [selectedConversation])
 
   // Receive new messages
-  useEffect(() => {
-    const handleNewMessage = (newMessage) => {
-      if (
-        String(newMessage.conversation) !==
-        String(selectedConversation?._id)
-      ) {
-        return
-      }
+useEffect(() => {
+  const handleNewMessage = (newMessage) => {
+    const conversationId = String(
+      newMessage.conversation?._id ||
+      newMessage.conversation ||
+      ''
+    )
 
+    const selectedId = String(
+      selectedConversation?._id || ''
+    )
+
+    const currentUserId = String(
+      user?._id || user?.id || ''
+    )
+
+    const senderId = String(
+      newMessage.sender?._id || newMessage.sender || ''
+    )
+
+    const isOwnMessage = senderId === currentUserId
+    const isCurrentChat = conversationId === selectedId
+
+    
+
+setConversations((prev) => {
+  const exists = prev.some(
+    (conversation) =>
+      String(conversation._id) === conversationId
+  )
+
+  const updatedConversations = prev.map((conversation) => {
+    if (String(conversation._id) !== conversationId) {
+      return conversation
+    }
+
+    return {
+      ...conversation,
+      lastMessage: newMessage,
+      updatedAt: newMessage.createdAt
+    }
+  })
+
+  if (!exists) {
+    return updatedConversations
+  }
+
+  return [...updatedConversations].sort((a, b) => {
+    const dateA = new Date(
+      a.lastMessage?.createdAt || a.updatedAt || 0
+    ).getTime()
+
+    const dateB = new Date(
+      b.lastMessage?.createdAt || b.updatedAt || 0
+    ).getTime()
+
+    return dateB - dateA
+  })
+})
+
+
+    
+if (!isOwnMessage && !isCurrentChat) {
+  setUnreadCounts((prev) => ({
+    ...prev,
+    [conversationId]: (prev[conversationId] || 0) + 1
+  }))
+
+  if (
+    'Notification' in window &&
+    Notification.permission === 'granted'
+  ) {
+    const senderName =
+      newMessage.sender?.username || 'New message'
+
+    const messageText =
+      newMessage.messageType === 'text'
+        ? newMessage.text
+        : 'Sent an attachment'
+
+    const notification = new Notification(senderName, {
+      body: messageText || 'You received a new message',
+      icon: '/favicon.ico',
+      tag: conversationId
+    })
+
+    notification.onclick = () => {
+      window.focus()
+      notification.close()
+    }
+  }
+}
+
+    if (isCurrentChat) {
       setMessages((prev) => {
-        const alreadyExists = prev.some(
-          (message) =>
-            message._id === newMessage._id
-        )
-
-        if (alreadyExists) {
+        if (prev.some((message) => message._id === newMessage._id)) {
           return prev
         }
 
         return [...prev, newMessage]
       })
 
-      // Tell sender that message was delivered and seen
-      const currentUserId = String(
-  user?._id || user?.id
-)
-
-if (
-  String(newMessage.sender?._id) !==
-  currentUserId
-){
+      if (!isOwnMessage) {
         socket.emit('message-delivered', {
           messageId: newMessage._id,
-          conversationId: newMessage.conversation
+          conversationId
         })
 
         socket.emit('message-seen', {
           messageId: newMessage._id,
-          conversationId: newMessage.conversation
+          conversationId
         })
       }
-
-      setConversations((prev) =>
-        prev.map((conversation) => {
-          if (
-            conversation._id !==
-            newMessage.conversation
-          ) {
-            return conversation
-          }
-
-          return {
-            ...conversation,
-            lastMessage: newMessage,
-            updatedAt: newMessage.createdAt
-          }
-        })
-      )
     }
+  }
 
-    socket.on(
-      'new-message',
-      handleNewMessage
-    )
+  socket.on('new-message', handleNewMessage)
 
-    return () => {
-      socket.off(
-        'new-message',
-        handleNewMessage
-      )
-    }
-  }, [selectedConversation, user])
+  return () => {
+    socket.off('new-message', handleNewMessage)
+  }
+}, [selectedConversation, user])
+
 
   // Delivered and seen status
   useEffect(() => {
@@ -725,6 +885,11 @@ if (
   }
 }, [selectedConversation])
 
+
+useEffect(() => {
+  requestNotificationPermission()
+}, [])
+
   // Typing indicator
   useEffect(() => {
     const handleTyping = (data) => {
@@ -827,11 +992,11 @@ useEffect(() => {
   }, [])
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex">
+    <div className="h-screen overflow-hidden bg-slate-950 text-white flex">
 
       {/* Sidebar */}
 
-      <aside className="w-[360px] border-r border-slate-800 bg-slate-900 flex flex-col">
+      <aside className="w-[360px] h-full min-h-0 shrink-0 border-r border-slate-800 bg-slate-900 flex flex-col">
 
         {/* Header */}
 
@@ -938,7 +1103,7 @@ useEffect(() => {
 
         {/* Conversations */}
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto">
 
           {loading ? (
 
@@ -1009,13 +1174,21 @@ useEffect(() => {
 
                   <div className="flex-1 min-w-0">
 
-                    <div className="flex justify-between">
+                    <div className="flex items-center justify-between gap-2">
 
-                      <p className="font-medium truncate">
-                        {getConversationTitle(conversation)}
-                      </p>
+  <p className="font-medium truncate">
+    {getConversationTitle(conversation)}
+  </p>
 
-                    </div>
+  {(unreadCounts[String(conversation._id)] || 0) > 0 && (
+    <span className="shrink-0 min-w-5 h-5 px-1 rounded-full bg-green-500 text-white text-xs font-bold flex items-center justify-center">
+      {unreadCounts[String(conversation._id)] > 99
+        ? '99+'
+        : unreadCounts[String(conversation._id)]}
+    </span>
+  )}
+
+</div>
 
                     <p className="text-sm text-slate-500 truncate mt-1">
                       {conversation.lastMessage?.text ||
@@ -1380,7 +1553,7 @@ useEffect(() => {
   </div>
 )}
 
-      <main className="flex-1 flex flex-col">
+      <main className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
 
         {!selectedConversation ? (
 
@@ -1510,7 +1683,7 @@ useEffect(() => {
 
             {/* Messages */}
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-3">
+            <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-3">
 
               {messages.length === 0 ? (
 
@@ -1555,6 +1728,11 @@ useEffect(() => {
                       >
                         <div className="flex items-start gap-2">
                           <div className="min-w-0 flex-1">
+                          {selectedConversation?.isGroup && !ownMessage && (
+  <p className="text-xs font-semibold text-red-300 mb-1">
+    {item.sender?.username || item.sender?.name || 'Unknown'}
+  </p>
+)}
                             {item.replyTo && (
                               <div
                               onClick={() =>
@@ -1584,49 +1762,89 @@ useEffect(() => {
                               </div>
                             )}
 
-                            {editingMessageId === item._id ? (
-                              <div className="space-y-2">
-                                <input
-                                  type="text"
-                                  value={editingText}
-                                  onChange={(e) =>
-                                    setEditingText(e.target.value)
-                                  }
-                                  autoFocus
-                                  className="w-full bg-white/10 border border-white/20 rounded-lg px-2 py-1.5 outline-none text-sm"
-                                />
+                            
+{editingMessageId === item._id ? (
+  <div className="space-y-2">
+    <input
+      type="text"
+      value={editingText}
+      onChange={(e) => setEditingText(e.target.value)}
+      autoFocus
+      className="w-full bg-white/10 border border-white/20 rounded-lg px-2 py-1.5 outline-none text-sm"
+    />
 
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={cancelEditMessage}
-                                    className="text-xs opacity-80 hover:opacity-100 cursor-pointer"
-                                  >
-                                    Cancel
-                                  </button>
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={cancelEditMessage}
+        className="text-xs opacity-80 hover:opacity-100 cursor-pointer"
+      >
+        Cancel
+      </button>
 
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      saveEditedMessage(item._id)
-                                    }
-                                    className="text-xs font-medium hover:opacity-80 cursor-pointer"
-                                  >
-                                    Save
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <p
-                                className={`break-words ${
-                                  item.isDeleted
-                                    ? 'italic opacity-70'
-                                    : ''
-                                }`}
-                              >
-                                {item.text}
-                              </p>
-                            )}
+      <button
+        type="button"
+        onClick={() => saveEditedMessage(item._id)}
+        className="text-xs font-medium hover:opacity-80 cursor-pointer"
+      >
+        Save
+      </button>
+    </div>
+  </div>
+) : item.isDeleted ? (
+  <p className="break-words italic opacity-70">
+    This message was deleted
+  </p>
+) : (
+  <div className="space-y-2">
+    {item.messageType === 'image' && item.fileUrl && (
+      <a
+        href={item.fileUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="block max-w-xs cursor-pointer"
+      >
+        <img
+          src={item.fileUrl}
+          alt="Shared image"
+          loading="lazy"
+          className="max-h-72 w-full rounded-lg object-contain"
+        />
+      </a>
+    )}
+
+    
+{item.messageType === 'document' && item.fileUrl && (
+  <a
+    href={item.fileUrl}
+    target="_blank"
+    rel="noopener noreferrer"
+    className="mt-2 flex max-w-xs items-center gap-3 rounded-lg border border-white/20 bg-black/10 p-3 hover:bg-black/20 cursor-pointer"
+  >
+    <span className="text-2xl shrink-0">📄</span>
+
+    <span className="min-w-0 flex-1">
+      <span className="block text-sm font-medium">
+        {item.fileName || 'Shared document'}
+      </span>
+      <span className="block text-xs opacity-70">
+        PDF / Document · Click to open
+      </span>
+    </span>
+
+    <span className="shrink-0">↗</span>
+  </a>
+)}
+
+
+    {item.text && (
+      <p className="break-words whitespace-pre-wrap">
+        {item.text}
+      </p>
+    )}
+  </div>
+)}
+
 
                             <div className="flex items-center justify-end gap-1 mt-1">
                               <p
@@ -1649,7 +1867,7 @@ useEffect(() => {
                                   {item.isSeen ? (
                                     <CheckCheck
                                       size={15}
-                                      className="text-blue-300"
+                                      className="text-blue-400"
                                     />
                                   ) : item.isDelivered ? (
                                     <CheckCheck
@@ -1741,123 +1959,131 @@ useEffect(() => {
 
             {/* Message input */}
 
-            <form
-              onSubmit={handleSendMessage}
-              className="border-t border-slate-800 bg-slate-900 p-4"
-            >
+<form
+  onSubmit={handleSendMessage}
+  className="border-t border-slate-800 bg-slate-900 p-4"
+>
+  {replyingTo && (
+    <div className="mb-3 flex items-center justify-between gap-3 rounded-xl bg-slate-800 border border-slate-700 px-3 py-2.5">
+      <div className="min-w-0 border-l-2 border-red-500 pl-3">
+        <p className="text-xs font-medium text-red-400">
+          Replying to {replyingTo.sender?.username || 'User'}
+        </p>
 
-              {replyingTo && (
-                <div className="mb-3 flex items-center justify-between gap-3 rounded-xl bg-slate-800 border border-slate-700 px-3 py-2.5">
-                  <div className="min-w-0 border-l-2 border-red-500 pl-3">
-                    <p className="text-xs font-medium text-red-400">
-                      Replying to {replyingTo.sender?.username || 'User'}
-                    </p>
+        <p className="text-sm text-slate-300 truncate mt-0.5">
+          {replyingTo.text}
+        </p>
+      </div>
 
-                    <p className="text-sm text-slate-300 truncate mt-0.5">
-                      {replyingTo.text}
-                    </p>
-                  </div>
+      <button
+        type="button"
+        onClick={cancelReply}
+        className="shrink-0 w-7 h-7 rounded-full text-slate-400 hover:text-white hover:bg-slate-700 cursor-pointer"
+        title="Cancel reply"
+      >
+        ×
+      </button>
+    </div>
+  )}
 
-                  <button
-                    type="button"
-                    onClick={cancelReply}
-                    className="shrink-0 w-7 h-7 rounded-full text-slate-400 hover:text-white hover:bg-slate-700 cursor-pointer"
-                    title="Cancel reply"
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
+  <div className="flex items-center gap-3">
+    
+<input
+  ref={fileInputRef}
+  type="file"
+  accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,text/plain,.doc,.docx"
+  className="hidden"
+  onChange={handleFileUpload}
+/>
 
-              <div className="flex items-center gap-3">
+<button
+  type="button"
+  onClick={() => fileInputRef.current?.click()}
+  disabled={uploadingFile}
+  className="p-2.5 text-slate-500 hover:text-white cursor-pointer disabled:opacity-50"
+  title={uploadingFile ? 'Uploading file...' : 'Attach file'}
+>
+  {uploadingFile ? (
+    <span className="text-xs">...</span>
+  ) : (
+    <Paperclip size={21} />
+  )}
+</button>
 
-                <button
-                  type="button"
-                  className="p-2.5 text-slate-500 cursor-pointer hover:text-white"
-                >
-                  <Paperclip size={21} />
-                </button>
+    <div className="flex-1 relative">
+      {showEmojiPicker && (
+        <div className="absolute bottom-full right-0 mb-3 z-50">
+          <EmojiPicker
+            onEmojiClick={(emojiData) => {
+              setMessage((prev) => prev + emojiData.emoji)
+            }}
+            height={350}
+            width={300}
+          />
+        </div>
+      )}
 
-                <div className="flex-1 relative">
+      <input
+        value={message}
+        onChange={(event) => {
+          const value = event.target.value
 
-                  <input
-                    value={message}
-                    onChange={(event) => {
-                      const value =
-                        event.target.value
+          setMessage(value)
 
-                      setMessage(value)
+          if (!selectedConversation) return
 
-                      if (!selectedConversation) {
-                        return
-                      }
+          if (typingTimeout) {
+            clearTimeout(typingTimeout)
+          }
 
-                      if (typingTimeout) {
-                        clearTimeout(
-                          typingTimeout
-                        )
-                      }
+          if (value.trim()) {
+            socket.emit('typing', {
+              conversationId: selectedConversation._id
+            })
 
-                      if (value.trim()) {
-                        socket.emit('typing', {
-                          conversationId:
-                            selectedConversation._id
-                        })
+            setIsTyping(true)
 
-                        setIsTyping(true)
+            const timeout = setTimeout(() => {
+              socket.emit('stop-typing', {
+                conversationId: selectedConversation._id
+              })
 
-                        const timeout =
-                          setTimeout(() => {
-                            socket.emit(
-                              'stop-typing',
-                              {
-                                conversationId:
-                                  selectedConversation._id
-                              }
-                            )
+              setIsTyping(false)
+            }, 1000)
 
-                            setIsTyping(false)
-                          }, 1000)
+            setTypingTimeout(timeout)
+          } else {
+            socket.emit('stop-typing', {
+              conversationId: selectedConversation._id
+            })
 
-                        setTypingTimeout(
-                          timeout
-                        )
-                      } else {
-                        socket.emit(
-                          'stop-typing',
-                          {
-                            conversationId:
-                              selectedConversation._id
-                          }
-                        )
+            setIsTyping(false)
+          }
+        }}
+        placeholder="Type a message..."
+        className="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 pl-4 pr-12 outline-none focus:border-red-500 cursor-text"
+      />
 
-                        setIsTyping(false)
-                      }
-                    }}
-                    placeholder="Type a message..."
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 pl-4 pr-12 outline-none focus:border-red-500 cursor-text"
-                  />
+      <button
+        type="button"
+        onClick={() => setShowEmojiPicker((prev) => !prev)}
+        className="absolute right-3 top-2.5 cursor-pointer text-slate-500 hover:text-white"
+        title="Add emoji"
+      >
+        <Smile size={21} />
+      </button>
+    </div>
 
-                  <button
-                    type="button"
-                    className="absolute right-3 top-2.5 cursor-pointer text-slate-500 hover:text-white"
-                  >
-                    <Smile size={21} />
-                  </button>
+    <button
+      type="submit"
+      disabled={!message.trim()}
+      className="w-11 h-11 rounded-xl cursor-pointer bg-red-500 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
+    >
+      <Send size={19} />
+    </button>
+  </div>
+</form>
 
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={!message.trim()}
-                  className="w-11 h-11 rounded-xl cursor-pointer bg-red-500 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
-                >
-                  <Send size={19} />
-                </button>
-
-              </div>
-
-            </form>
 
           </>
 

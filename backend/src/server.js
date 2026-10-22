@@ -1,5 +1,5 @@
+import 'dotenv/config'
 import express from 'express'
-import dotenv from 'dotenv'
 import cors from 'cors'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
@@ -9,8 +9,8 @@ import userRoutes from './routes/userRoutes.js'
 import conversationRoutes from './routes/conversationRoutes.js'
 import messageRoutes from './routes/messageRoutes.js'
 import socketHandler from './sockets/socketHandler.js'
+import uploadRoutes from './routes/uploadRoutes.js'
 
-dotenv.config()
 
 const app = express()
 const httpServer = createServer(app)
@@ -42,6 +42,7 @@ app.use('/api/auth', authRoutes)
 app.use('/api/users', userRoutes)
 app.use('/api/conversations', conversationRoutes)
 app.use('/api/messages', messageRoutes)
+app.use('/api/uploads', uploadRoutes)
 
 socketHandler(io)
 
