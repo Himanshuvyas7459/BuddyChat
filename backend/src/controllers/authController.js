@@ -108,3 +108,102 @@ export const login = async (req, res) => {
     })
   }
 }
+
+
+export const updateProfile = async (req, res) => {
+  try {
+    const { username, bio, avatar } = req.body
+    const userId = req.user._id
+
+    const updates = {}
+
+    if (username !== undefined) {
+      const trimmedUsername = username.trim()
+
+      if (trimmedUsername.length < 3 || trimmedUsername.length > 30) {
+        return res.status(400).json({
+          message: 'Username must be between 3 and 30 characters'
+        })
+      }
+
+      const existingUser = await User.findOne({
+        username: trimmedUsername,
+        _id: { $ne: userId }
+      })
+
+      if (existingUser) {
+        return res.status(409).json({
+          message: 'Username already exists'
+        })
+      }
+
+      updates.username = trimmedUsername
+    }
+
+    if (bio !== undefined) {
+      if (typeof bio !== 'string' || bio.length > 150) {
+        return res.status(400).json({
+          message: 'Bio must be 150 characters or less'
+        })
+      }
+
+      updates.bio = bio.trim()
+    }
+
+    if (avatar !== undefined) {
+      if (typeof avatar !== 'string') {
+        return res.status(400).json({
+          message: 'Invalid avatar'
+        })
+      }
+
+      updates.avatar = avatar.trim()
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: 'No profile changes provided'
+      })
+    }
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).select('-password')
+
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found'
+      })
+    }
+
+    const io = req.app.get('io')
+
+    io.emit('profile-updated', {
+      id: user._id.toString(),
+      username: user.username,
+      avatar: user.avatar,
+      bio: user.bio
+    })
+
+    res.json({
+      message: 'Profile updated successfully',
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        avatar: user.avatar,
+        bio: user.bio,
+        isOnline: user.isOnline,
+        lastSeen: user.lastSeen
+      }
+    })
+  } catch (error) {
+    console.error('Update profile error:', error)
+
+    res.status(500).json({
+      message: 'Server error'
+    })
+  }
+}

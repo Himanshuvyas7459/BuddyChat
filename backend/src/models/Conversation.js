@@ -1,3 +1,4 @@
+
 import mongoose from 'mongoose'
 
 const conversationSchema = new mongoose.Schema({
@@ -30,7 +31,21 @@ const conversationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Message',
     default: null
-  }
+  },
+
+  clearedFor: [
+    {
+      user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+      },
+      clearedAt: {
+        type: Date,
+        required: true
+      }
+    }
+  ]
 }, {
   timestamps: true
 })

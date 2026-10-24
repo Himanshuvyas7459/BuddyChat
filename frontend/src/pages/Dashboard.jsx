@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { useSelector } from 'react-redux'
+import { useSelector, useDispatch } from 'react-redux'
+import { updateUser } from '../store/authSlice'
 import EmojiPicker from 'emoji-picker-react'
 import {
   MessageCircle,
@@ -16,7 +17,11 @@ import {
   Trash2,
   Pencil,
   Check,
-  CheckCheck
+  CheckCheck,
+  Camera, 
+  ArrowLeft,
+  UserRound, 
+  X
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import socket from '../services/socket'
@@ -24,6 +29,14 @@ import api from '../services/api'
 
 const Dashboard = () => {
   const { user } = useSelector((state) => state.auth)
+  const dispatch = useDispatch()
+
+  const [showProfileModal, setShowProfileModal] = useState(false)
+const [profileUsername, setProfileUsername] = useState('')
+const [profileBio, setProfileBio] = useState('')
+const [profileAvatar, setProfileAvatar] = useState('')
+const [avatarFile, setAvatarFile] = useState(null)
+const [profileSaving, setProfileSaving] = useState(false)
 
   const [conversations, setConversations] = useState([])
   const [search, setSearch] = useState('')
@@ -50,6 +63,9 @@ const [editingGroupName, setEditingGroupName] = useState(false)
 const [newGroupName, setNewGroupName] = useState('')
 const [groupSearchUsers, setGroupSearchUsers] =
   useState([])
+
+const [showChatMenu, setShowChatMenu] = useState(false)
+const [clearingChat, setClearingChat] = useState(false)
 
   const messagesEndRef = useRef(null)
   const [highlightedMessageId, setHighlightedMessageId] =
@@ -359,6 +375,51 @@ const handleFileUpload = async (event) => {
       )
     }
   }
+
+  const handleClearChat = async () => {
+  if (!selectedConversation?._id || clearingChat) {
+    return
+  }
+
+  const confirmed = window.confirm(
+    'Clear this chat for you? Your old messages will be hidden only on your side. Other participants will still see their messages.'
+  )
+
+  if (!confirmed) {
+    setShowChatMenu(false)
+    return
+  }
+
+  try {
+    setClearingChat(true)
+
+    await api.delete(
+      `/messages/${selectedConversation._id}/clear`
+    )
+
+    setMessages([])
+    setReplyingTo(null)
+    setEditingMessageId(null)
+    setEditingText('')
+    setMessageMenuId(null)
+    setShowChatMenu(false)
+
+    setUnreadCounts((prev) => ({
+      ...prev,
+      [String(selectedConversation._id)]: 0
+    }))
+
+    toast.success('Chat cleared for you')
+  } catch (error) {
+    console.error('Clear chat error:', error)
+
+    toast.error(
+      error.response?.data?.message || 'Failed to clear chat'
+    )
+  } finally {
+    setClearingChat(false)
+  }
+}
 
   const handleEditMessage = (item) => {
     setEditingMessageId(item._id)
@@ -756,6 +817,71 @@ if (!isOwnMessage && !isCurrentChat) {
       )
     }
 
+        const handleProfileUpdated = (updatedUser) => {
+      if (!updatedUser?.id) return
+
+      // Update the selected chat's other user
+      setSelectedConversation((prev) => {
+        if (!prev || prev.isGroup) return prev
+
+        const participants = prev.participants || []
+
+        return {
+          ...prev,
+          participants: participants.map((participant) => {
+            const participantId =
+              typeof participant === 'string'
+                ? participant
+                : participant?._id || participant?.id
+
+            if (participantId?.toString() !== updatedUser.id) {
+              return participant
+            }
+
+            return {
+              ...(typeof participant === 'object' ? participant : {}),
+              ...updatedUser,
+              _id: updatedUser.id
+            }
+          })
+        }
+      })
+
+      // Update conversation list
+      setConversations((prev) =>
+        prev.map((conversation) => ({
+          ...conversation,
+          participants: (conversation.participants || []).map((participant) => {
+            const participantId =
+              typeof participant === 'string'
+                ? participant
+                : participant?._id || participant?.id
+
+            if (participantId?.toString() !== updatedUser.id) {
+              return participant
+            }
+
+            return {
+              ...(typeof participant === 'object' ? participant : {}),
+              ...updatedUser,
+              _id: updatedUser.id
+            }
+          })
+        }))
+      )
+
+      // Update search results if the user is listed there
+      setSearchResults((prev) =>
+        prev.map((item) =>
+          (item._id || item.id)?.toString() === updatedUser.id
+            ? { ...item, ...updatedUser, _id: updatedUser.id }
+            : item
+        )
+      )
+    }
+
+    socket.on('profile-updated', handleProfileUpdated)
+
     const handleSeen = ({
       messageId,
       conversationId
@@ -802,6 +928,8 @@ if (!isOwnMessage && !isCurrentChat) {
         'message-seen',
         handleSeen
       )
+
+      socket.off('profile-updated', handleProfileUpdated)
     }
   }, [selectedConversation])
 
@@ -991,13 +1119,73 @@ useEffect(() => {
     loadConversations()
   }, [])
 
+  const openProfileModal = () => {
+  setProfileUsername(user?.username || '')
+  setProfileBio(user?.bio || '')
+  setProfileAvatar(user?.avatar || '')
+  setAvatarFile(null)
+  setShowProfileModal(true)
+}
+
+const handleProfileSave = async (e) => {
+  e.preventDefault()
+
+  const username = profileUsername.trim()
+  const bio = profileBio.trim()
+
+  if (username.length < 3 || username.length > 30) {
+    toast.error('Username must be 3–30 characters')
+    return
+  }
+
+  if (bio.length > 150) {
+    toast.error('Bio cannot exceed 150 characters')
+    return
+  }
+
+  setProfileSaving(true)
+
+  try {
+    let avatar = profileAvatar
+
+    if (avatarFile) {
+      const formData = new FormData()
+      formData.append('file', avatarFile)
+
+      const uploadResponse = await api.post('/uploads', formData)
+      avatar = uploadResponse.data.fileUrl
+    }
+
+    const response = await api.patch('/auth/profile', {
+      username,
+      bio,
+      avatar
+    })
+
+    dispatch(updateUser(response.data.user))
+    toast.success('Profile updated successfully')
+    setShowProfileModal(false)
+  } catch (error) {
+    toast.error(
+      error.response?.data?.message || 'Failed to update profile'
+    )
+  } finally {
+    setProfileSaving(false)
+  }
+}
+
   return (
-    <div className="h-screen overflow-hidden bg-slate-950 text-white flex">
+<div className="h-[100dvh] overflow-hidden bg-slate-950 text-white flex relative">
 
       {/* Sidebar */}
 
-      <aside className="w-[360px] h-full min-h-0 shrink-0 border-r border-slate-800 bg-slate-900 flex flex-col">
-
+<aside
+  className={`${
+    selectedConversation
+      ? 'hidden md:flex'
+      : 'flex'
+  } w-full md:w-[320px] lg:w-[360px] h-full min-h-0 shrink-0 border-r border-slate-800 bg-slate-900 flex-col`}
+>
         {/* Header */}
 
         <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
@@ -1070,11 +1258,17 @@ useEffect(() => {
                   className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-700 text-left cursor-pointer"
                 >
 
-                  <div className="w-10 h-10 rounded-full bg-red-500 flex items-center justify-center font-semibold">
-                    {item.username
-                      .charAt(0)
-                      .toUpperCase()}
-                  </div>
+                  <div className="w-10 h-10 shrink-0 rounded-full bg-red-500 overflow-hidden flex items-center justify-center font-semibold">
+  {item.avatar ? (
+    <img
+      src={item.avatar}
+      alt={item.username}
+      className="w-full h-full object-cover"
+    />
+  ) : (
+    item.username?.charAt(0)?.toUpperCase()
+  )}
+</div>
 
                   <div>
                     <p className="font-medium">
@@ -1156,15 +1350,19 @@ useEffect(() => {
 
                   <div className="relative">
 
-                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center font-bold text-lg">
-                      {conversation.isGroup
-  ? conversation.groupName
-      ?.charAt(0)
-      ?.toUpperCase()
-  : otherUser?.username
-      ?.charAt(0)
-      ?.toUpperCase()}
-                    </div>
+                    <div className="w-12 h-12 shrink-0 rounded-full bg-gradient-to-br from-red-500 to-orange-500 overflow-hidden flex items-center justify-center font-bold text-lg">
+  {conversation.isGroup ? (
+    conversation.groupName?.charAt(0)?.toUpperCase()
+  ) : otherUser?.avatar ? (
+    <img
+      src={otherUser.avatar}
+      alt={otherUser.username || 'Profile'}
+      className="w-full h-full object-cover"
+    />
+  ) : (
+    otherUser?.username?.charAt(0)?.toUpperCase()
+  )}
+</div>
 
                     {!conversation.isGroup && otherUser?.isOnline && (
   <span className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 border-2 border-slate-900 rounded-full" />
@@ -1210,11 +1408,22 @@ useEffect(() => {
 
         <div className="border-t border-slate-800 p-4 flex items-center gap-3">
 
-          <div className="w-10 h-10 rounded-full bg-red-500 flex items-center justify-center font-semibold">
-            {user?.username
-              ?.charAt(0)
-              .toUpperCase()}
-          </div>
+          <button
+  type="button"
+  onClick={openProfileModal}
+  className="w-10 h-10 shrink-0 rounded-full bg-red-500 overflow-hidden flex items-center justify-center font-semibold cursor-pointer hover:ring-2 hover:ring-red-400"
+  title="Edit profile"
+>
+  {user?.avatar ? (
+    <img
+      src={user.avatar}
+      alt="Profile"
+      className="w-full h-full object-cover"
+    />
+  ) : (
+    user?.username?.charAt(0)?.toUpperCase()
+  )}
+</button>
 
           <div className="flex-1 min-w-0">
 
@@ -1225,6 +1434,14 @@ useEffect(() => {
             <p className="text-xs text-green-400">
               Online
             </p>
+
+            <button
+  type="button"
+  onClick={openProfileModal}
+  className="text-xs text-red-400 hover:text-red-300 cursor-pointer"
+>
+  Edit profile
+</button>
 
           </div>
 
@@ -1553,7 +1770,11 @@ useEffect(() => {
   </div>
 )}
 
-      <main className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
+<main
+  className={`${
+    selectedConversation ? 'flex' : 'hidden md:flex'
+  } flex-1 min-w-0 min-h-0 overflow-hidden flex-col`}
+>
 
         {!selectedConversation ? (
 
@@ -1589,8 +1810,19 @@ useEffect(() => {
 
             {/* Chat header */}
 
-            <header className="h-[76px] border-b border-slate-800 bg-slate-900 flex items-center px-6">
-
+<header className="relative z-10 min-h-[76px] shrink-0 border-b border-slate-800 bg-slate-900 flex items-center gap-2 px-3 sm:px-4 md:px-6">
+<button
+  type="button"
+  onClick={() => {
+    setSelectedConversation(null)
+    setShowChatMenu(false)
+    setShowEmojiPicker(false)
+  }}
+  className="md:hidden shrink-0 rounded-lg p-2 text-slate-300 hover:bg-slate-800 cursor-pointer"
+  title="Back to chats"
+>
+  <ArrowLeft size={20} />
+</button>
               {(() => {
                 const otherUser =
                   getOtherUser(
@@ -1600,33 +1832,37 @@ useEffect(() => {
                 return (
                   <>
 
-                    <div className="w-11 h-11 rounded-full bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center font-bold">
-                      {selectedConversation?.isGroup
-  ? selectedConversation.groupName
-      ?.charAt(0)
-      ?.toUpperCase()
-  : otherUser?.username
-      ?.charAt(0)
-      ?.toUpperCase()}
-                    </div>
+                    <div className="w-11 h-11 shrink-0 rounded-full bg-gradient-to-br from-red-500 to-orange-500 overflow-hidden flex items-center justify-center font-bold">
+  {selectedConversation?.isGroup ? (
+    selectedConversation.groupName?.charAt(0)?.toUpperCase()
+  ) : otherUser?.avatar ? (
+    <img
+      src={otherUser.avatar}
+      alt={otherUser.username || 'Profile'}
+      className="w-full h-full object-cover"
+    />
+  ) : (
+    otherUser?.username?.charAt(0)?.toUpperCase()
+  )}
+</div>
 
                     <div className="ml-3">
 
-                      <h2 className="font-semibold">
-                        {selectedConversation?.isGroup ? (
-  <button
-    type="button"
-    onClick={() => setShowGroupInfo(true)}
-    className="text-left font-semibold hover:underline cursor-pointer"
-  >
-    {selectedConversation.groupName || 'Group Chat'}
-  </button>
-) : (
-  <h2 className="font-semibold">
-    {getConversationTitle(selectedConversation)}
-  </h2>
-)}
-                      </h2>
+                      <div className="min-w-0">
+  {selectedConversation?.isGroup ? (
+    <button
+      type="button"
+      onClick={() => setShowGroupInfo(true)}
+      className="max-w-full truncate text-left font-semibold hover:underline cursor-pointer"
+    >
+      {selectedConversation.groupName || 'Group Chat'}
+    </button>
+  ) : (
+    <h2 className="truncate font-semibold">
+      {getConversationTitle(selectedConversation)}
+    </h2>
+  )}
+</div>
 
                       <p
   className={`text-xs ${
@@ -1647,6 +1883,11 @@ useEffect(() => {
         ? 'Online'
         : 'Offline'}
 </p>
+{!selectedConversation?.isGroup && otherUser?.bio && (
+  <p className="text-xs text-slate-400 truncate max-w-[260px]">
+    {otherUser.bio}
+  </p>
+)}
 
                     </div>
 
@@ -1654,24 +1895,44 @@ useEffect(() => {
 
                       <button
                         type="button"
-                        className="p-2.5 hover:bg-slate-800 rounded-lg text-slate-400 cursor-pointer"
+                        className="p-2.5 shrink-0 rounded-lg p-2 hover:bg-slate-800 cursor-pointer hover:bg-slate-800 rounded-lg text-slate-400 cursor-pointer"
                       >
                         <Phone size={19} />
                       </button>
 
                       <button
                         type="button"
-                        className="p-2.5 hover:bg-slate-800 rounded-lg text-slate-400 cursor-pointer"
+                        className="p-2.5 shrink-0 rounded-lg p-2 hover:bg-slate-800 cursor-pointer hover:bg-slate-800 rounded-lg text-slate-400 cursor-pointer"
                       >
                         <Video size={20} />
                       </button>
 
-                      <button
-                        type="button"
-                        className="p-2.5 hover:bg-slate-800 rounded-lg text-slate-400 cursor-pointer"
-                      >
-                        <MoreVertical size={20} />
-                      </button>
+                      
+<div className="relative">
+  <button
+    type="button"
+    onClick={() => setShowChatMenu((prev) => !prev)}
+    className="p-2.5 shrink-0 rounded-lg p-2 hover:bg-slate-800 cursor-pointer hover:bg-slate-800 rounded-lg text-slate-400 cursor-pointer"
+    title="Chat options"
+  >
+    <MoreVertical size={20} />
+  </button>
+
+  {showChatMenu && (
+    <div className="absolute right-0 top-full mt-2 z-50 w-48 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 py-1 shadow-xl">
+      <button
+        type="button"
+        disabled={clearingChat}
+        onClick={handleClearChat}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-red-400 hover:bg-slate-800 cursor-pointer disabled:opacity-50"
+      >
+        <Trash2 size={16} />
+        {clearingChat ? 'Clearing chat...' : 'Clear chat'}
+      </button>
+    </div>
+  )}
+</div>
+
 
                     </div>
 
@@ -1683,7 +1944,7 @@ useEffect(() => {
 
             {/* Messages */}
 
-            <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-3">
+<div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 sm:p-4 md:p-6 space-y-3">
 
               {messages.length === 0 ? (
 
@@ -1716,7 +1977,7 @@ useEffect(() => {
                       }`}
                     >
                       <div
-                        className={`relative max-w-[65%] px-4 py-2.5 rounded-2xl ${
+                        className={`relative min-w-0 max-w-[88%] sm:max-w-[80%] lg:max-w-[65%] px-3 sm:px-4 py-2.5 rounded-2xl ${
   highlightedMessageId === item._id
     ? 'ring-2 ring-yellow-400'
     : ''
@@ -1959,18 +2220,19 @@ useEffect(() => {
 
             {/* Message input */}
 
+
 <form
   onSubmit={handleSendMessage}
-  className="border-t border-slate-800 bg-slate-900 p-4"
+  className="shrink-0 border-t border-slate-800 bg-slate-900 p-2 sm:p-3 md:p-4"
 >
   {replyingTo && (
-    <div className="mb-3 flex items-center justify-between gap-3 rounded-xl bg-slate-800 border border-slate-700 px-3 py-2.5">
+    <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2.5">
       <div className="min-w-0 border-l-2 border-red-500 pl-3">
         <p className="text-xs font-medium text-red-400">
           Replying to {replyingTo.sender?.username || 'User'}
         </p>
 
-        <p className="text-sm text-slate-300 truncate mt-0.5">
+        <p className="mt-0.5 truncate text-sm text-slate-300">
           {replyingTo.text}
         </p>
       </div>
@@ -1978,7 +2240,7 @@ useEffect(() => {
       <button
         type="button"
         onClick={cancelReply}
-        className="shrink-0 w-7 h-7 rounded-full text-slate-400 hover:text-white hover:bg-slate-700 cursor-pointer"
+        className="h-7 w-7 shrink-0 rounded-full text-slate-400 hover:bg-slate-700 hover:text-white cursor-pointer"
         title="Cancel reply"
       >
         ×
@@ -1986,39 +2248,38 @@ useEffect(() => {
     </div>
   )}
 
-  <div className="flex items-center gap-3">
-    
-<input
-  ref={fileInputRef}
-  type="file"
-  accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,text/plain,.doc,.docx"
-  className="hidden"
-  onChange={handleFileUpload}
-/>
+  <div className="flex min-w-0 items-center gap-1.5 sm:gap-3">
+    <input
+      ref={fileInputRef}
+      type="file"
+      accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,text/plain,.doc,.docx"
+      className="hidden"
+      onChange={handleFileUpload}
+    />
 
-<button
-  type="button"
-  onClick={() => fileInputRef.current?.click()}
-  disabled={uploadingFile}
-  className="p-2.5 text-slate-500 hover:text-white cursor-pointer disabled:opacity-50"
-  title={uploadingFile ? 'Uploading file...' : 'Attach file'}
->
-  {uploadingFile ? (
-    <span className="text-xs">...</span>
-  ) : (
-    <Paperclip size={21} />
-  )}
-</button>
+    <button
+      type="button"
+      onClick={() => fileInputRef.current?.click()}
+      disabled={uploadingFile}
+      className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer disabled:opacity-50"
+      title={uploadingFile ? 'Uploading file...' : 'Attach file'}
+    >
+      {uploadingFile ? (
+        <span className="text-xs">...</span>
+      ) : (
+        <Paperclip size={20} />
+      )}
+    </button>
 
-    <div className="flex-1 relative">
+    <div className="relative min-w-0 flex-1">
       {showEmojiPicker && (
-        <div className="absolute bottom-full right-0 mb-3 z-50">
+        <div className="absolute bottom-full right-0 z-50 mb-3 max-w-[calc(100vw-24px)] overflow-hidden rounded-xl shadow-xl">
           <EmojiPicker
             onEmojiClick={(emojiData) => {
               setMessage((prev) => prev + emojiData.emoji)
             }}
             height={350}
-            width={300}
+            width={Math.min(300, window.innerWidth - 24)}
           />
         </div>
       )}
@@ -2061,28 +2322,30 @@ useEffect(() => {
           }
         }}
         placeholder="Type a message..."
-        className="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 pl-4 pr-12 outline-none focus:border-red-500 cursor-text"
+        className="w-full min-w-0 rounded-xl border border-slate-700 bg-slate-800 py-2.5 pl-3 pr-10 text-sm outline-none focus:border-red-500 sm:py-3 sm:pl-4 sm:text-base cursor-text"
       />
 
       <button
         type="button"
         onClick={() => setShowEmojiPicker((prev) => !prev)}
-        className="absolute right-3 top-2.5 cursor-pointer text-slate-500 hover:text-white"
+        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 hover:text-white cursor-pointer"
         title="Add emoji"
       >
-        <Smile size={21} />
+        <Smile size={19} />
       </button>
     </div>
 
     <button
       type="submit"
       disabled={!message.trim()}
-      className="w-11 h-11 rounded-xl cursor-pointer bg-red-500 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-500 hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer sm:h-11 sm:w-11"
+      title="Send message"
     >
-      <Send size={19} />
+      <Send size={18} />
     </button>
   </div>
 </form>
+
 
 
           </>
@@ -2091,6 +2354,122 @@ useEffect(() => {
 
       </main>
 
+      
+      {showProfileModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 text-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+              <div>
+                <h2 className="text-lg font-semibold">Edit Profile</h2>
+                <p className="text-sm text-slate-400">
+                  Update your personal information
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowProfileModal(false)}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleProfileSave} className="space-y-5 p-5">
+              <div className="flex flex-col items-center">
+                <div className="relative h-24 w-24 overflow-hidden rounded-full bg-red-500 flex items-center justify-center text-3xl font-bold">
+                  {profileAvatar ? (
+                    <img
+                      src={profileAvatar}
+                      alt="Avatar preview"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    profileUsername.charAt(0).toUpperCase() || '?'
+                  )}
+                </div>
+
+                <label className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800 cursor-pointer">
+                  <Camera size={16} />
+                  Choose profile photo
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (!file) return
+
+                      if (file.size > 5 * 1024 * 1024) {
+                        toast.error('Image must be 5 MB or smaller')
+                        event.target.value = ''
+                        return
+                      }
+
+                      setAvatarFile(file)
+                      setProfileAvatar(URL.createObjectURL(file))
+                    }}
+                  />
+                </label>
+                <p className="mt-1 text-xs text-slate-500">
+                  JPG, PNG, WebP or GIF · Max 5 MB
+                </p>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-300">
+                  Username
+                </label>
+                <input
+                  type="text"
+                  value={profileUsername}
+                  onChange={(event) => setProfileUsername(event.target.value)}
+                  minLength={3}
+                  maxLength={30}
+                  required
+                  className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 outline-none focus:border-red-500"
+                  placeholder="Your username"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-300">
+                  Bio
+                </label>
+                <textarea
+                  value={profileBio}
+                  onChange={(event) => setProfileBio(event.target.value)}
+                  maxLength={150}
+                  rows={3}
+                  className="w-full resize-none rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 outline-none focus:border-red-500"
+                  placeholder="Tell people a little about yourself..."
+                />
+                <p className="mt-1 text-right text-xs text-slate-500">
+                  {profileBio.length}/150
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-3 border-t border-slate-800 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowProfileModal(false)}
+                  className="rounded-xl bg-slate-800 px-4 py-2.5 text-sm hover:bg-slate-700 cursor-pointer"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={profileSaving}
+                  className="rounded-xl bg-red-500 px-5 py-2.5 text-sm font-semibold hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                >
+                  {profileSaving ? 'Saving...' : 'Save changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

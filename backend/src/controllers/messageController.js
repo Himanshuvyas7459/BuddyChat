@@ -1,6 +1,7 @@
 import Message from '../models/Message.js'
 import Conversation from '../models/Conversation.js'
 
+
 export const getMessages = async (req, res) => {
   try {
     const { conversationId } = req.params
@@ -16,20 +17,25 @@ export const getMessages = async (req, res) => {
       })
     }
 
-    const messages = await Message.find({
-      conversation: conversationId
-    })
-      .populate(
-        'sender',
-        'username email avatar'
-      )
-      .sort({
-        createdAt: 1
-      })
+    const userClearRecord = conversation.clearedFor.find(
+      item => String(item.user) === String(req.user._id)
+    )
 
-    res.json({
-      messages
-    })
+    const messageFilter = {
+      conversation: conversationId
+    }
+
+    if (userClearRecord) {
+      messageFilter.createdAt = {
+        $gt: userClearRecord.clearedAt
+      }
+    }
+
+    const messages = await Message.find(messageFilter)
+      .populate('sender', 'username email avatar')
+      .sort({ createdAt: 1 })
+
+    res.json({ messages })
   } catch (error) {
     console.error('Get messages error:', error)
 
@@ -38,6 +44,7 @@ export const getMessages = async (req, res) => {
     })
   }
 }
+
 
 export const sendMessage = async (req, res) => {
   try {
@@ -197,6 +204,54 @@ export const editMessage = async (req, res) => {
 
     res.status(500).json({
       message: 'Failed to edit message'
+    })
+  }
+}
+
+
+export const clearChat = async (req, res) => {
+  try {
+    const { conversationId } = req.params
+
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: req.user._id
+    })
+
+    if (!conversation) {
+      return res.status(404).json({
+        message: 'Conversation not found'
+      })
+    }
+
+    const userId = String(req.user._id)
+    const existingRecord = conversation.clearedFor.find(
+      item => String(item.user) === userId
+    )
+
+    const clearedAt = new Date()
+
+    if (existingRecord) {
+      existingRecord.clearedAt = clearedAt
+    } else {
+      conversation.clearedFor.push({
+        user: req.user._id,
+        clearedAt
+      })
+    }
+
+    await conversation.save()
+
+    res.json({
+      message: 'Chat cleared for you',
+      conversationId,
+      clearedAt
+    })
+  } catch (error) {
+    console.error('Clear chat error:', error)
+
+    res.status(500).json({
+      message: 'Failed to clear chat'
     })
   }
 }

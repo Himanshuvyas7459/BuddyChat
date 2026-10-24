@@ -4,7 +4,8 @@ import {
   getMessages,
   sendMessage,
   deleteMessage,
-  editMessage
+  editMessage,
+  clearChat
 } from '../controllers/messageController.js'
 
 const router = express.Router()
@@ -12,6 +13,7 @@ const router = express.Router()
 router.get('/:conversationId', protect, getMessages)
 router.post('/', protect, sendMessage)
 router.delete('/:messageId', protect, deleteMessage)
+router.delete('/:conversationId/clear', protect, clearChat)
 router.put('/:messageId', protect, editMessage)
 
 export default router
